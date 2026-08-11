@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Sub Tracker</title>
+<style>
+  :root{
+    --pitch:#1e5631;
+    --pitch-dark:#153e23;
+    --chalk:#f4f7f4;
+    --bench:#2b3a3f;
+    --amber:#e8a33d;
+    --danger:#c1443a;
+    --blue:#3f7fb0;
+    --ink:#0d1f14;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  body{
+    margin:0;
+    font-family:'Segoe UI', system-ui, -apple-system, sans-serif;
+    background:var(--ink);
+    color:var(--chalk);
+    min-height:100vh;
+  }
+  .field-lines{
+    background-image:
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.04) 0 2px, transparent 2px 40px);
+  }
+  header{
+    padding:14px 16px 10px;
+    background:var(--pitch-dark);
+    border-bottom:2px solid var(--pitch);
+    text-align:center;
+    position:sticky;
+    top:0;
+    z-index:10;
+  }
+  header h1{
+    margin:0;
+    font-size:1.05rem;
+    letter-spacing:0.08em;
+    text-transform:uppercase;
+    font-weight:800;
+    color:var(--chalk);
+  }
+  .half-label{
+    font-size:0.7rem;
+    text-transform:uppercase;
+    letter-spacing:0.12em;
+    color:#9fb8a6;
+    margin-top:6px;
+  }
+  .clockrow{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:14px;
+    margin-top:4px;
+  }
+  .clock{
+    font-variant-numeric:tabular-nums;
+    font-size:2.6rem;
+    font-weight:800;
+    letter-spacing:0.02em;
+    line-height:1;
+  }
+  .clock.warn{color:var(--amber);}
+  .btnrow{display:flex;gap:8px;justify-content:center;margin-top:10px;flex-wrap:wrap;}
+  button{
+    font-family:inherit;
+    border:none;
+    border-radius:10px;
+    padding:10px 16px;
+    font-weight:700;
+    font-size:0.85rem;
+    cursor:pointer;
+    letter-spacing:0.02em;
+  }
+  .btn-go{background:var(--pitch);color:white;}
+  .btn-pause{background:var(--amber);color:var(--ink);}
+  .btn-ghost{background:transparent;color:#9fb8a6;border:1px solid #3a4d40;}
+  .btn-suggest{background:var(--amber);color:var(--ink);}
+  .btn-apply{background:#7bd389;color:var(--ink);}
+  .target-note{
+    font-size:0.72rem;
+    color:#9fb8a6;
+    text-align:center;
+    padding:6px 16px 0;
+  }
+  main{padding:12px 12px 90px;}
+  .section-label{
+    font-size:0.75rem;
+    text-transform:uppercase;
+    letter-spacing:0.1em;
+    color:#9fb8a6;
+    margin:14px 4px 6px;
+    display:flex;
+    justify-content:space-between;
+  }
+  .suggest-panel{
+    background:var(--bench);
+    border:2px solid var(--amber);
+    border-radius:12px;
+    padding:10px 12px;
+    margin-top:10px;
+  }
+  .suggest-panel .stitle{
+    font-size:0.72rem;
+    text-transform:uppercase;
+    letter-spacing:0.08em;
+    color:var(--amber);
+    font-weight:800;
+    margin-bottom:6px;
+  }
+  .suggest-row{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:6px 0;
+    border-top:1px solid #3a4d40;
+    font-size:0.85rem;
+  }
+  .suggest-row:first-of-type{border-top:none;}
+  .suggest-row .who{display:flex;flex-direction:column;gap:2px;}
+  .suggest-row .out{color:#f2b5ae;}
+  .suggest-row .in{color:#a9e2b5;}
+  .suggest-row .pos-tag{
+    font-size:0.62rem;
+    color:#9fb8a6;
+    text-transform:uppercase;
+    letter-spacing:0.05em;
+  }
+  .suggest-actions{display:flex;gap:8px;margin-top:8px;}
+  .suggest-actions button{flex:1;padding:9px;font-size:0.8rem;}
+  .no-subs-msg{
+    font-size:0.78rem;
+    color:#9fb8a6;
+    padding:4px 2px;
+  }
+  .poswrap{margin-bottom:6px;}
+  .poswrap .postitle{
+    font-size:0.68rem;
+    color:#7fa98c;
+    text-transform:uppercase;
+    letter-spacing:0.08em;
+    margin:8px 4px 4px;
+  }
+  .grid{
+    display:grid;
+    grid-template-columns:1fr 1fr 1fr;
+    gap:8px;
+  }
+  .grid.bench-grid{grid-template-columns:1fr 1fr;}
+  .card{
+    background:var(--pitch);
+    border-radius:12px;
+    padding:9px 10px;
+    display:flex;
+    flex-direction:column;
+    gap:3px;
+    position:relative;
+    border:2px solid transparent;
+    transition:border-color .15s, transform .1s;
+    min-height:74px;
+  }
+  .card.gk{background:var(--blue);}
+  .card.bench{background:var(--bench);}
+  .card.selected{border-color:var(--amber); transform:scale(0.96);}
+  .card.marked-out{border-color:var(--danger);}
+  .card.marked-in{border-color:#7bd389;}
+  .card .name{font-weight:700;font-size:0.88rem;line-height:1.2;}
+  .card .time{
+    font-variant-numeric:tabular-nums;
+    font-size:0.78rem;
+    color:#dfeee2;
+    opacity:0.85;
+  }
+  .card .posbreak{
+    font-size:0.62rem;
+    color:#c7dccb;
+    opacity:0.8;
+    letter-spacing:0.01em;
+  }
+  .card .bar{
+    height:4px;
+    border-radius:3px;
+    background:rgba(255,255,255,0.15);
+    overflow:hidden;
+    margin-top:1px;
+  }
+  .card .bar-fill{height:100%;background:var(--amber);}
+  .card.due .bar-fill{background:#7bd389;}
+  .flag{
+    position:absolute;
+    top:5px;
+    right:6px;
+    font-size:0.58rem;
+    text-transform:uppercase;
+    letter-spacing:0.04em;
+    background:rgba(0,0,0,0.25);
+    padding:2px 5px;
+    border-radius:6px;
+  }
+  .hint{
+    text-align:center;
+    font-size:0.75rem;
+    color:#9fb8a6;
+    padding:10px 20px 0;
+    min-height:18px;
+  }
+  .setup{
+    max-width:460px;
+    margin:0 auto;
+    padding:20px 16px 60px;
+  }
+  .setup h1{font-size:1.3rem;margin-bottom:2px;}
+  .setup p{color:#9fb8a6;font-size:0.85rem;margin-top:0;}
+  .rowline{
+    display:grid;
+    grid-template-columns:34px 1fr 108px;
+    gap:8px;
+    margin-bottom:8px;
+    align-items:center;
+  }
+  .rowline.absent{opacity:0.4;}
+  .rowline input[type="text"], .rowline select{
+    background:var(--bench);
+    border:1px solid #3a4d40;
+    color:white;
+    border-radius:8px;
+    padding:9px 10px;
+    font-size:0.9rem;
+    width:100%;
+  }
+  .rowline input[type="checkbox"]{
+    width:20px;height:20px;
+    accent-color:#7bd389;
+  }
+  .rowline input::placeholder{color:#6d7f73;}
+  .counts{
+    display:flex;
+    gap:10px;
+    font-size:0.75rem;
+    color:#9fb8a6;
+    margin:10px 4px 4px;
+    flex-wrap:wrap;
+  }
+  .counts b{color:var(--chalk);}
+  .counts .bad{color:var(--danger);font-weight:700;}
+  .counts .good{color:#7bd389;font-weight:700;}
+  .target-preview{
+    font-size:0.78rem;
+    color:#a9e2b5;
+    margin:6px 4px 0;
+    font-weight:600;
+  }
+  .start-btn{
+    width:100%;
+    padding:14px;
+    font-size:1rem;
+    background:var(--pitch);
+    color:white;
+    border-radius:10px;
+    margin-top:14px;
+  }
+  .start-btn:disabled{background:#3a4d40;color:#6d7f73;}
+  .plan{
+    font-size:0.72rem;
+    color:#9fb8a6;
+    background:var(--bench);
+    border-radius:10px;
+    padding:10px 12px;
+    margin-top:14px;
+    line-height:1.5;
+  }
+  footer.legend{
+    position:fixed;
+    bottom:0;left:0;right:0;
+    background:var(--pitch-dark);
+    border-top:1px solid #2c3f31;
+    padding:8px 16px;
+    font-size:0.7rem;
+    color:#9fb8a6;
+    text-align:center;
+  }
+</style>
+</head>
+<body class="field-lines">
+
+<div id="app"></div>
+
+<script>
+const HALF_SECONDS = 20 * 60;
+const SUB_WINDOW = 5 * 60;
+const MAX_SUGGESTIONS = 3;
+
+function freshPlayers(names){
+  return Array.from({length:14}, (_,i)=>({
+    id:i, name: (names && names[i]) || '',
+    pos: i<3 ? 'F' : i<6 ? 'D' : i===6 ? 'GK' : 'BENCH',
+    present: true,
+    seconds:0,
+    posSeconds:{F:0,D:0,GK:0},
+  }));
+}
+
+let state = {
+  screen: 'setup',
+  players: freshPlayers(),
+  running:false,
+  elapsed:0,
+  half:1,
+  selected:null,
+  intervalId:null,
+  suggestions:[],
+  lastSuggestedWindow:-1,
+  targetSeconds: 20*60, // recalculated at game start based on who's actually present
+};
+
+function fmt(s){
+  s = Math.max(0, Math.round(s));
+  const m = Math.floor(s/60);
+  const sec = s%60;
+  return m + ':' + String(sec).padStart(2,'0');
+}
+
+function render(){
+  const app = document.getElementById('app');
+  if(state.screen === 'setup'){
+    app.innerHTML = renderSetup();
+    bindSetupEvents();
+  } else {
+    app.innerHTML = renderGame();
+    bindGameEvents();
+  }
+}
+
+function countsByPos(){
+  const c = {F:0,D:0,GK:0,BENCH:0};
+  state.players.forEach(p=>{ if(p.present) c[p.pos]++; });
+  return c;
+}
+
+function presentCount(){
+  return state.players.filter(p=>p.present).length;
+}
+
+function renderSetup(){
+  const rows = state.players.map((p,i)=>`
+    <div class="rowline ${p.present?'':'absent'}">
+      <input type="checkbox" data-idx="${i}" data-role="present" ${p.present?'checked':''}>
+      <input type="text" data-idx="${i}" placeholder="Player ${i+1} name" value="${p.name}">
+      <select data-idx="${i}" data-role="pos" ${p.present?'':'disabled'}>
+        <option value="F" ${p.pos==='F'?'selected':''}>Forward</option>
+        <option value="D" ${p.pos==='D'?'selected':''}>Defender</option>
+        <option value="GK" ${p.pos==='GK'?'selected':''}>Goalie</option>
+        <option value="BENCH" ${p.pos==='BENCH'?'selected':''}>Bench</option>
+      </select>
+    </div>
+  `).join('');
+  const c = countsByPos();
+  const present = presentCount();
+  const bench = present - (c.F + c.D + c.GK);
+  const ok = c.F===3 && c.D===3 && c.GK===1 && present>=7;
+  const gameSecondsTotal = HALF_SECONDS*2;
+  const targetPreview = present>=1 ? Math.round((gameSecondsTotal*7)/present) : 0;
+
+  return `
+    <div class="setup">
+      <h1>Sub Tracker</h1>
+      <p>7v7 &middot; 3 Fwd / 3 Def / 1 GK &middot; 45 min &middot; subs every 5 min</p>
+      <p style="margin-top:4px;">Uncheck anyone who isn't at today's game &mdash; targets and swaps auto-adjust to who's actually here.</p>
+      <div>${rows}</div>
+      <div class="counts">
+        <span>Present: <b>${present}</b></span>
+        <span>Forwards: <b class="${c.F===3?'good':'bad'}">${c.F}/3</b></span>
+        <span>Defenders: <b class="${c.D===3?'good':'bad'}">${c.D}/3</b></span>
+        <span>Goalie: <b class="${c.GK===1?'good':'bad'}">${c.GK}/1</b></span>
+        <span>Bench: <b>${bench>=0?bench:0}</b></span>
+      </div>
+      ${present>0 ? `<div class="target-preview">Today's target per present player: ${fmt(targetPreview)}${bench===0 && present===7 ? ' — full squad, no subs today' : ''}</div>` : ''}
+      ${present>0 && present<7 ? `<div class="target-preview" style="color:#f2b5ae;">Need at least 7 present players for 7v7 &mdash; only ${present} checked in.</div>` : ''}
+      <div class="plan">
+        <strong>How it works:</strong> only checked-in players count toward today's lineup, bench, and target time. Every 5 minutes the app tells you exactly who to sub out and who to sub in, for each position, so everyone present ends up near the same total minutes and rotates across forward, defense, and goalie.
+      </div>
+      <button class="start-btn" id="startBtn" ${ok?'':'disabled'}>${ok? 'Start Game' : (present<7 ? 'Check in at least 7 players' : 'Assign exactly 3F / 3D / 1GK among present players')}</button>
+    </div>
+  `;
+}
+
+function bindSetupEvents(){
+  document.querySelectorAll('.rowline input[type="text"]').forEach(inp=>{
+    inp.addEventListener('input', e=>{
+      state.players[+e.target.dataset.idx].name = e.target.value;
+    });
+  });
+  document.querySelectorAll('.rowline select').forEach(sel=>{
+    sel.addEventListener('change', e=>{
+      state.players[+e.target.dataset.idx].pos = e.target.value;
+      render();
+    });
+  });
+  document.querySelectorAll('.rowline input[type="checkbox"]').forEach(chk=>{
+    chk.addEventListener('change', e=>{
+      const idx = +e.target.dataset.idx;
+      state.players[idx].present = e.target.checked;
+      render();
+    });
+  });
+  const startBtn = document.getElementById('startBtn');
+  if(startBtn){
+    startBtn.addEventListener('click', ()=>{
+      state.players.forEach((p,i)=>{ if(!p.name.trim()) p.name = 'Player ' + (i+1); });
+      const n = presentCount();
+      state.targetSeconds = Math.round((HALF_SECONDS*2*7)/n);
+      state.screen = 'game';
+      render();
+    });
+  }
+}
+
+// Compute at most one swap per line (F, D, GK) among PRESENT players only.
+function computeSuggestions(){
+  const groups = ['F','D','GK'];
+  const benchPool = state.players.filter(p=>p.present && p.pos==='BENCH').slice();
+  const used = new Set();
+  const out = [];
+  if(benchPool.length === 0) return out; // nobody to sub in today
+  const shuffledGroups = groups.slice().sort(()=>Math.random()-0.5);
+
+  shuffledGroups.forEach(g=>{
+    const fieldGroup = state.players.filter(p=>p.present && p.pos===g);
+    if(fieldGroup.length === 0) return;
+    let fieldP = fieldGroup[0];
+    fieldGroup.forEach(p=>{
+      if(p.seconds > fieldP.seconds) fieldP = p;
+      else if(p.seconds === fieldP.seconds && Math.random() < 0.5) fieldP = p;
+    });
+
+    let candidates = benchPool.filter(b=>!used.has(b.id));
+    if(candidates.length === 0) return;
+    candidates.sort((a,b)=>{
+      if(a.seconds !== b.seconds) return a.seconds - b.seconds;
+      if(a.posSeconds[g] !== b.posSeconds[g]) return a.posSeconds[g] - b.posSeconds[g];
+      return Math.random() - 0.5;
+    });
+    const inP = candidates[0];
+    if(fieldP.seconds - inP.seconds < 30 && fieldP.seconds < state.targetSeconds) return;
+    out.push({outId: fieldP.id, inId: inP.id, pos: g});
+    used.add(inP.id);
+  });
+  return out;
+}
+
+function applySuggestion(sugg){
+  const a = state.players.find(p=>p.id===sugg.outId);
+  const b = state.players.find(p=>p.id===sugg.inId);
+  if(!a || !b) return;
+  const tmp = a.pos;
+  a.pos = b.pos;
+  b.pos = tmp;
+}
+
+function renderGame(){
+  const onField = state.players.filter(p=>p.present && p.pos!=='BENCH');
+  const forwards = onField.filter(p=>p.pos==='F').sort((a,b)=>b.seconds-a.seconds);
+  const defenders = onField.filter(p=>p.pos==='D').sort((a,b)=>b.seconds-a.seconds);
+  const goalie = onField.filter(p=>p.pos==='GK');
+  const bench = state.players.filter(p=>p.present && p.pos==='BENCH').sort((a,b)=>a.seconds-b.seconds);
+  const lowestBenchSecs = bench.length? bench[0].seconds : 0;
+  const noSubsToday = bench.length === 0;
+
+  const secsIntoHalf = state.elapsed - (state.half===1?0:HALF_SECONDS);
+  const secsToNextSub = SUB_WINDOW - (((secsIntoHalf%SUB_WINDOW)+SUB_WINDOW)%SUB_WINDOW);
+  const nearSub = secsToNextSub <= 30;
+  const outIds = new Set(state.suggestions.map(s=>s.outId));
+  const inIds = new Set(state.suggestions.map(s=>s.inId));
+
+  function fieldCard(p){
+    const pct = Math.min(100, (p.seconds/state.targetSeconds)*100);
+    const sel = state.selected === p.id;
+    const gkClass = p.pos==='GK' ? 'gk' : '';
+    const markClass = outIds.has(p.id) ? 'marked-out' : '';
+    return `
+      <div class="card ${gkClass} ${sel?'selected':''} ${markClass}" data-id="${p.id}">
+        <span class="name">${p.name}</span>
+        <span class="time">${fmt(p.seconds)}</span>
+        <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
+      </div>
+    `;
+  }
+
+  function benchCard(p){
+    const due = p.seconds === lowestBenchSecs;
+    const pct = Math.min(100, (p.seconds/state.targetSeconds)*100);
+    const sel = state.selected === p.id;
+    const markClass = inIds.has(p.id) ? 'marked-in' : '';
+    const posTag = `F ${fmt(p.posSeconds.F).split(':')[0]}m &middot; D ${fmt(p.posSeconds.D).split(':')[0]}m &middot; GK ${fmt(p.posSeconds.GK).split(':')[0]}m`;
+    return `
+      <div class="card bench ${due?'due':''} ${sel?'selected':''} ${markClass}" data-id="${p.id}">
+        ${due?'<span class="flag">Due</span>':''}
+        <span class="name">${p.name}</span>
+        <span class="time">${fmt(p.seconds)} total</span>
+        <span class="posbreak">${posTag}</span>
+        <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
+      </div>
+    `;
+  }
+
+  const suggPanel = state.suggestions.length ? `
+    <div class="suggest-panel">
+      <div class="stitle">Sub Assignments</div>
+      ${state.suggestions.map(s=>{
+        const outP = state.players.find(p=>p.id===s.outId);
+        const inP = state.players.find(p=>p.id===s.inId);
+        return `
+          <div class="suggest-row">
+            <div class="who">
+              <span class="out">OUT ${outP.name} <span class="pos-tag">(${POS_LABEL(s.pos)}, ${fmt(outP.seconds)})</span></span>
+              <span class="in">IN &nbsp;${inP.name} <span class="pos-tag">(${fmt(inP.seconds)})</span></span>
+            </div>
+          </div>
+        `;
+      }).join('')}
+      <div class="suggest-actions">
+        <button class="btn-apply" id="applyAllBtn">Apply All</button>
+        <button class="btn-ghost" id="dismissBtn">Dismiss</button>
+      </div>
+    </div>
+  ` : (noSubsToday ? `<div class="no-subs-msg">Full squad on the field today — no bench, no subs needed.</div>` : '');
+
+  return `
+    <header>
+      <h1>Sub Tracker</h1>
+      <div class="half-label">Half ${state.half} of 2 &middot; ${presentCount()} present &middot; target ${fmt(state.targetSeconds)}</div>
+      <div class="clockrow">
+        <div class="clock ${nearSub?'warn':''}">${fmt(secsIntoHalf)}</div>
+      </div>
+      <div class="target-note">${noSubsToday ? '' : (nearSub ? 'Sub window — see assignments below' : 'Next sub in ' + fmt(secsToNextSub))}</div>
+      <div class="btnrow">
+        <button class="${state.running?'btn-pause':'btn-go'}" id="toggleBtn">${state.running? 'Pause':'Start'}</button>
+        ${noSubsToday ? '' : `<button class="btn-suggest" id="suggestBtn">Suggest Subs</button>`}
+        <button class="btn-ghost" id="halftimeBtn" ${state.half===2?'disabled style="opacity:.3"':''}>End Half 1</button>
+        <button class="btn-ghost" id="resetBtn">Reset</button>
+      </div>
+      ${suggPanel}
+    </header>
+    <main>
+      <div class="section-label"><span>On Field</span><span>tap to swap manually</span></div>
+      <div class="poswrap">
+        <div class="postitle">Forwards</div>
+        <div class="grid">${forwards.map(fieldCard).join('')}</div>
+      </div>
+      <div class="poswrap">
+        <div class="postitle">Defenders</div>
+        <div class="grid">${defenders.map(fieldCard).join('')}</div>
+      </div>
+      <div class="poswrap">
+        <div class="postitle">Goalie</div>
+        <div class="grid" style="grid-template-columns:1fr;">${goalie.map(fieldCard).join('')}</div>
+      </div>
+      ${bench.length ? `
+      <div class="section-label"><span>Bench (${bench.length})</span><span>lowest time = due</span></div>
+      <div class="grid bench-grid">${bench.map(benchCard).join('')}</div>
+      ` : ''}
+      <div class="hint">${state.selected!==null ? 'Now tap the on-field player to swap with' : 'Target: ' + fmt(state.targetSeconds) + ' total each by final whistle'}</div>
+    </main>
+    <footer class="legend">Tap "Suggest Subs" any time for exact assignments, or tap bench then field to swap manually</footer>
+  `;
+}
+
+function POS_LABEL(pos){
+  return pos==='F' ? 'Forward' : pos==='D' ? 'Defender' : pos==='GK' ? 'Goalie' : 'Bench';
+}
+
+function bindGameEvents(){
+  document.getElementById('toggleBtn').addEventListener('click', toggleClock);
+  const sb = document.getElementById('suggestBtn');
+  if(sb) sb.addEventListener('click', ()=>{
+    state.suggestions = computeSuggestions();
+    render();
+  });
+  const ht = document.getElementById('halftimeBtn');
+  if(ht) ht.addEventListener('click', endHalf);
+  document.getElementById('resetBtn').addEventListener('click', resetGame);
+  const applyAll = document.getElementById('applyAllBtn');
+  if(applyAll) applyAll.addEventListener('click', ()=>{
+    state.suggestions.forEach(applySuggestion);
+    state.suggestions = [];
+    render();
+  });
+  const dismiss = document.getElementById('dismissBtn');
+  if(dismiss) dismiss.addEventListener('click', ()=>{
+    state.suggestions = [];
+    render();
+  });
+  document.querySelectorAll('.card').forEach(c=>{
+    c.addEventListener('click', ()=>onCardTap(+c.dataset.id));
+  });
+}
+
+function onCardTap(id){
+  if(state.selected === null){
+    state.selected = id;
+  } else if(state.selected === id){
+    state.selected = null;
+  } else {
+    const a = state.players.find(p=>p.id===state.selected);
+    const b = state.players.find(p=>p.id===id);
+    if(a.pos !== b.pos && (a.pos==='BENCH' || b.pos==='BENCH')){
+      const tmp = a.pos;
+      a.pos = b.pos;
+      b.pos = tmp;
+    }
+    state.selected = null;
+  }
+  render();
+}
+
+function toggleClock(){
+  state.running = !state.running;
+  if(state.running){
+    state.intervalId = setInterval(tick, 1000);
+  } else {
+    clearInterval(state.intervalId);
+  }
+  render();
+}
+
+function tick(){
+  state.elapsed += 1;
+  state.players.forEach(p=>{
+    if(p.present && p.pos !== 'BENCH'){
+      p.seconds += 1;
+      p.posSeconds[p.pos] += 1;
+    }
+  });
+  const secsIntoHalf = state.elapsed - (state.half===1?0:HALF_SECONDS);
+  const windowIdx = Math.floor(secsIntoHalf / SUB_WINDOW) + (state.half===2 ? 100 : 0);
+  const secInWindow = secsIntoHalf % SUB_WINDOW;
+  if(secInWindow === 0 && windowIdx !== state.lastSuggestedWindow){
+    state.suggestions = computeSuggestions();
+    state.lastSuggestedWindow = windowIdx;
+  }
+  if(state.elapsed >= HALF_SECONDS*2){
+    state.running = false;
+    clearInterval(state.intervalId);
+  }
+  render();
+}
+
+function endHalf(){
+  state.running = false;
+  clearInterval(state.intervalId);
+  state.half = 2;
+  state.elapsed = HALF_SECONDS;
+  state.suggestions = [];
+  render();
+}
+
+function resetGame(){
+  clearInterval(state.intervalId);
+  const keepNames = state.players.map(p=>p.name);
+  state = {
+    screen: 'setup',
+    players: freshPlayers(keepNames),
+    running:false, elapsed:0, half:1, selected:null, intervalId:null,
+    suggestions:[], lastSuggestedWindow:-1,
+    targetSeconds: 20*60,
+  };
+  render();
+}
+
+render();
+</script>
+</body>
+</html>
