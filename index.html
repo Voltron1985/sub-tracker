@@ -435,6 +435,7 @@ let state = {
   rosterOpen:false,
   shortNote:'', // e.g. "Short 1 Defender" after an injury with no bench cover
   halftimeNotice:false,
+  previewShown:false,
 };
 
 function fmt(s){
@@ -773,6 +774,8 @@ function renderGame(){
 
   const halftimeBanner = state.halftimeNotice ? `<div class="warn-note" style="background:var(--blue); color:white; border-radius:8px; padding:6px 10px; margin-top:6px;">Suggested 2nd half lineup is set below &mdash; adjust anyone by tapping bench then field, then hit Start.</div>` : '';
 
+  const subWindowBanner = (nearSub && !noSubsToday && state.running) ? `<div class="warn-note" style="background:var(--amber); color:var(--ink); border-radius:8px; padding:6px 10px; margin-top:6px; font-weight:800; animation:pulse 1s infinite;">SUB WINDOW IN ${secsToNextSub}s &mdash; get ready</div>` : '';
+
   const rosterPanel = state.rosterOpen ? `
     <div class="roster-panel">
       <div class="stitle">Today's Roster</div>
@@ -800,6 +803,7 @@ function renderGame(){
       <div class="target-note">${noSubsToday ? '' : (nearSub ? 'Sub window — see assignments below' : 'Next sub in ' + fmt(secsToNextSub))}</div>
       ${state.shortNote ? `<div class="warn-note">${state.shortNote}</div>` : ''}
       ${staminaBanner}
+      ${subWindowBanner}
       ${halftimeBanner}
       <div class="btnrow">
         <button class="${state.running?'btn-pause':'btn-go'}" id="toggleBtn">${state.running? 'Pause':'Start'}</button>
@@ -971,12 +975,23 @@ function tick(){
   const secsIntoHalf = state.elapsed - (state.half===1?0:HALF_SECONDS);
   const windowIdx = Math.floor(secsIntoHalf / SUB_WINDOW) + (state.half===2 ? 100 : 0);
   const secInWindow = secsIntoHalf % SUB_WINDOW;
+  const secsToNextSub = SUB_WINDOW - (((secsIntoHalf % SUB_WINDOW) + SUB_WINDOW) % SUB_WINDOW);
+  const upcomingIsRealWindow = secsIntoHalf + secsToNextSub < HALF_SECONDS; // don't preview at halftime/full-time
+
+  // Show the suggestion panel as soon as the 30-second warning banner appears,
+  // not just at the exact window boundary - so the coach has the assignments
+  // ready to read during the pulsing "get ready" alert, not after it.
+  if(secsToNextSub <= 30 && secsToNextSub > 0 && upcomingIsRealWindow && !state.previewShown){
+    state.suggestions = computeSuggestions();
+    state.previewShown = true;
+  }
   // Only the 5/10/15-minute marks are real sub windows. Exclude secsIntoHalf===0
   // (kickoff, nothing to sub yet) and secsIntoHalf===HALF_SECONDS (that's the
   // whistle for halftime/full-time, not a mid-half substitution).
   if(secInWindow === 0 && secsIntoHalf > 0 && secsIntoHalf < HALF_SECONDS && windowIdx !== state.lastSuggestedWindow){
     state.suggestions = computeSuggestions();
     state.lastSuggestedWindow = windowIdx;
+    state.previewShown = false; // reset so the NEXT window's early preview can fire
   }
   if(state.elapsed >= HALF_SECONDS*2){
     state.running = false;
@@ -1069,6 +1084,7 @@ function endHalf(){
   state.elapsed = HALF_SECONDS;
   state.suggestions = [];
   state.lastSuggestedWindow = -1;
+  state.previewShown = false;
   computeHalftimeLineup();
   state.halftimeNotice = true; // shown until coach hits Start for 2nd half
   render();
@@ -1084,7 +1100,7 @@ function resetGame(){
     screen: 'setup',
     players: freshPlayers(keepNames, keepGk),
     running:false, elapsed:0, half:1, selected:null, intervalId:null,
-    suggestions:[], lastSuggestedWindow:-1, rosterOpen:false, shortNote:'', halftimeNotice:false,
+    suggestions:[], lastSuggestedWindow:-1, rosterOpen:false, shortNote:'', halftimeNotice:false, previewShown:false,
   };
   render();
 }
