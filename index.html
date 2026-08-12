@@ -222,6 +222,9 @@
   .card.selected{border-color:var(--amber); transform:scale(0.96);}
   .card.marked-out{border-color:var(--danger);}
   .card.marked-in{border-color:#7bd389;}
+  .card.stint-warn{background:#5c4a1f;}
+  .card.stint-max{background:var(--danger); animation:pulse 1.5s infinite;}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.75;}}
   .card .name{font-weight:700;font-size:0.88rem;line-height:1.2;}
   .card .time{
     font-variant-numeric:tabular-nums;
@@ -353,14 +356,15 @@
 const HALF_SECONDS = 20 * 60;
 const SUB_WINDOW = 5 * 60;
 
-function freshPlayers(names){
+function freshPlayers(names, gkFlags){
   return Array.from({length:14}, (_,i)=>({
     id:i, name: (names && names[i]) || '',
     pos: i<3 ? 'F' : i<6 ? 'D' : i===6 ? 'GK' : 'BENCH',
     present: true,
-    gkWilling: i===6, // starting goalie defaults to willing; others opt in at setup
+    gkWilling: gkFlags ? !!gkFlags[i] : i===6, // preserved on reset if provided, else default
     seconds:0,
     posSeconds:{F:0,D:0,GK:0},
+    consecutiveSeconds:0, // resets to 0 the instant they hit the bench
   }));
 }
 
@@ -506,7 +510,7 @@ function bindSetupEvents(){
       render();
     });
   });
-  document.querySelectorAll('.rowline input[type="checkbox"]').forEach(chk=>{
+  document.querySelectorAll('.rowline input[data-role="present"]').forEach(chk=>{
     chk.addEventListener('change', e=>{
       const idx = +e.target.dataset.idx;
       state.players[idx].present = e.target.checked;
@@ -523,49 +527,66 @@ function bindSetupEvents(){
   }
 }
 
-// Compute at most one swap per line (F, D, GK) among PRESENT players only.
-// Balances two things at once: (1) each kid's minutes IN THAT SPECIFIC
-// POSITION against that position's own target, not just their overall
-// total, and (2) overall total minutes as a tiebreaker. Position-specific
-// time is now the primary sort key - that's what actually rotates kids
-// through forward/defender/goalie evenly instead of just equalizing
-// total minutes while parking someone at one line all game.
+// Ranks every field player across ALL lines (F/D/GK) by how far over their
+// own personalized target they are, so the biggest 3 offenders get swapped
+// each window - not one-per-line, not the whole team. Anyone who's hit the
+// hard stamina limit is swapped regardless of this cap (see below).
+const MAX_SUGGESTIONS = 3; // realistic number of OPTIONAL rotation swaps per window
+const MAX_CONSECUTIVE_SECONDS = 10 * 60; // hard stamina limit - no player stays on past this in one stretch
+
 function computeSuggestions(){
   const groups = ['F','D','GK'];
   const benchPool = state.players.filter(p=>p.present && p.pos==='BENCH').slice();
+  if(benchPool.length === 0) return [];
+
   const used = new Set();
   const out = [];
-  if(benchPool.length === 0) return out;
-  const shuffledGroups = groups.slice().sort(()=>Math.random()-0.5);
 
-  shuffledGroups.forEach(g=>{
-    // check EVERY field player in this line, worst first, against THEIR OWN
-    // personalized target (which is smaller for goalie-willing kids in F/D,
-    // since goalie time already eats into their total budget).
-    const fieldGroup = state.players.filter(p=>p.present && p.pos===g)
-      .slice().sort((a,b)=>{
-        const overA = a.posSeconds[g] - getPosTarget(g,a);
-        const overB = b.posSeconds[g] - getPosTarget(g,b);
-        return overB - overA;
-      });
-    fieldGroup.forEach(fieldP=>{
-      let candidates = benchPool.filter(b=>!used.has(b.id) && (g!=='GK' || b.gkWilling));
-      if(candidates.length === 0) return;
-      candidates.sort((a,b)=>{
-        const deficitA = a.posSeconds[g] - getPosTarget(g,a);
-        const deficitB = b.posSeconds[g] - getPosTarget(g,b);
-        if(deficitA !== deficitB) return deficitA - deficitB; // most behind first
-        if(a.seconds !== b.seconds) return a.seconds - b.seconds;
-        return Math.random() - 0.5;
-      });
-      const inP = candidates[0];
-      const fieldOverage = fieldP.posSeconds[g] - getPosTarget(g, fieldP);
-      const inDeficit = getPosTarget(g, inP) - inP.posSeconds[g];
-      if(fieldOverage < 30 && inDeficit < 30) return;
-      out.push({outId: fieldP.id, inId: inP.id, pos: g});
+  function bestReplacement(g){
+    let pool = benchPool.filter(b=>!used.has(b.id) && (g!=='GK' || b.gkWilling));
+    if(pool.length === 0) return null;
+    pool.sort((a,b)=>{
+      const dA = a.posSeconds[g] - getPosTarget(g,a);
+      const dB = b.posSeconds[g] - getPosTarget(g,b);
+      if(dA !== dB) return dA - dB;
+      if(a.seconds !== b.seconds) return a.seconds - b.seconds;
+      return Math.random() - 0.5;
+    });
+    return pool[0];
+  }
+
+  // HARD RULE, not a suggestion: anyone who has hit the consecutive-minutes
+  // stamina limit comes off no matter what, even beyond the normal cap on
+  // how many swaps happen in one window.
+  const mandatory = state.players
+    .filter(p=>p.present && p.pos!=='BENCH' && p.consecutiveSeconds >= MAX_CONSECUTIVE_SECONDS)
+    .sort((a,b)=> b.consecutiveSeconds - a.consecutiveSeconds);
+  mandatory.forEach(fieldP=>{
+    const inP = bestReplacement(fieldP.pos);
+    if(inP){
+      out.push({outId: fieldP.id, inId: inP.id, pos: fieldP.pos, mandatory:true});
       used.add(inP.id);
+    }
+  });
+
+  // Rank every remaining field player, across ALL lines, by how far over
+  // their own personalized target they are - most overdue first. Capped
+  // so a normal window stays a handful of targeted swaps, not the whole team.
+  let candidates = [];
+  groups.forEach(g=>{
+    state.players.filter(p=>p.present && p.pos===g && !mandatory.includes(p)).forEach(fieldP=>{
+      candidates.push({fieldP, g, urgency: fieldP.posSeconds[g] - getPosTarget(g, fieldP)});
     });
   });
+  candidates.sort((a,b)=> (b.urgency - a.urgency) || (Math.random() - 0.5));
+
+  for(const c of candidates){
+    if(out.length >= mandatory.length + MAX_SUGGESTIONS) break;
+    const inP = bestReplacement(c.g);
+    if(!inP) continue;
+    out.push({outId: c.fieldP.id, inId: inP.id, pos: c.g, mandatory:false});
+    used.add(inP.id);
+  }
   return out;
 }
 
@@ -593,7 +614,7 @@ function togglePresentLive(idx){
     // from the bench so the team isn't accidentally left short without you noticing.
     if(p.pos !== 'BENCH'){
       const vacated = p.pos;
-      const benchPool = state.players.filter(pl=>pl.present && pl.pos==='BENCH');
+      const benchPool = state.players.filter(pl=>pl.present && pl.pos==='BENCH' && (vacated!=='GK' || pl.gkWilling));
       if(benchPool.length > 0){
         let best = benchPool[0];
         benchPool.forEach(b=>{
@@ -603,7 +624,7 @@ function togglePresentLive(idx){
         best.pos = vacated;
         state.shortNote = '';
       } else {
-        state.shortNote = 'No bench players left \u2014 short 1 ' + POS_LABEL(vacated) + ' until someone is added back.';
+        state.shortNote = 'No ' + (vacated==='GK' ? 'goalie-willing ' : '') + 'bench players left \u2014 short 1 ' + POS_LABEL(vacated) + ' until someone is added back.';
       }
     }
   }
@@ -632,10 +653,15 @@ function renderGame(){
     const sel = state.selected === p.id;
     const gkClass = p.pos==='GK' ? 'gk' : '';
     const markClass = outIds.has(p.id) ? 'marked-out' : '';
+    const atLimit = p.consecutiveSeconds >= MAX_CONSECUTIVE_SECONDS;
+    const nearLimit = !atLimit && p.consecutiveSeconds >= MAX_CONSECUTIVE_SECONDS - 120;
+    const stintClass = atLimit ? 'stint-max' : nearLimit ? 'stint-warn' : '';
     return `
-      <div class="card ${gkClass} ${sel?'selected':''} ${markClass}" data-id="${p.id}">
+      <div class="card ${gkClass} ${sel?'selected':''} ${markClass} ${stintClass}" data-id="${p.id}">
+        ${atLimit?'<span class="flag" style="background:var(--danger);">Max stint</span>':''}
         <span class="name">${p.name}</span>
-        <span class="time">${fmt(p.seconds)}</span>
+        <span class="time">${fmt(p.seconds)} total</span>
+        <span class="posbreak">On field: ${fmt(p.consecutiveSeconds)} / 10:00</span>
         <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
       </div>
     `;
@@ -668,7 +694,7 @@ function renderGame(){
         return `
           <div class="suggest-row">
             <div class="who">
-              <span class="out">OUT ${outP.name} <span class="pos-tag">(${POS_LABEL(s.pos)}, ${fmt(outP.seconds)})</span></span>
+              <span class="out">OUT ${outP.name} <span class="pos-tag">(${POS_LABEL(s.pos)}${s.mandatory ? ', STAMINA LIMIT' : ''}, ${fmt(outP.seconds)})</span></span>
               <span class="in">IN &nbsp;${inP.name} <span class="pos-tag">(${fmt(inP.seconds)})</span></span>
             </div>
           </div>
@@ -680,6 +706,12 @@ function renderGame(){
       </div>
     </div>
   ` : (noSubsToday ? `<div class="no-subs-msg">No one on the bench right now &mdash; no subs available.</div>` : '');
+
+  const staminaBanner = (()=>{
+    const overLimit = state.players.filter(p=>p.present && p.pos!=='BENCH' && p.consecutiveSeconds >= MAX_CONSECUTIVE_SECONDS);
+    if(overLimit.length === 0) return '';
+    return `<div class="warn-note" style="background:var(--danger); color:white; border-radius:8px; padding:6px 10px; margin-top:6px;">10:00 stamina limit hit: ${overLimit.map(p=>p.name).join(', ')} &mdash; sub now</div>`;
+  })();
 
   const rosterPanel = state.rosterOpen ? `
     <div class="roster-panel">
@@ -694,7 +726,7 @@ function renderGame(){
           </label>
         </div>
       `).join('')}
-      <div class="roster-note">Uncheck a player who's hurt or leaving early &mdash; if they were on the field, the app immediately pulls the best-rested bench player into their spot. Check a late arrival back on and they join the bench. The GK checkbox controls who's in the goalie rotation pool. Every target updates automatically.</div>
+      <div class="roster-note">Uncheck a player who's hurt or leaving early &mdash; if they were on the field, the app immediately pulls the best-rested bench player into their spot. Check a late arrival back on and they join the bench. Uncheck GK for a kid who no longer wants to play goalie &mdash; if they're currently in net, they're pulled out right away and swapped for another willing player. Every target updates automatically.</div>
     </div>
   ` : '';
 
@@ -707,6 +739,7 @@ function renderGame(){
       </div>
       <div class="target-note">${noSubsToday ? '' : (nearSub ? 'Sub window — see assignments below' : 'Next sub in ' + fmt(secsToNextSub))}</div>
       ${state.shortNote ? `<div class="warn-note">${state.shortNote}</div>` : ''}
+      ${staminaBanner}
       <div class="btnrow">
         <button class="${state.running?'btn-pause':'btn-go'}" id="toggleBtn">${state.running? 'Pause':'Start'}</button>
         ${noSubsToday ? '' : `<button class="btn-suggest" id="suggestBtn">Suggest Subs</button>`}
@@ -777,7 +810,27 @@ function bindGameEvents(){
   });
   document.querySelectorAll('.roster-row input[data-role="gkwilling"]').forEach(chk=>{
     chk.addEventListener('change', e=>{
-      state.players[+e.target.dataset.idx].gkWilling = e.target.checked;
+      const idx = +e.target.dataset.idx;
+      const p = state.players[idx];
+      p.gkWilling = e.target.checked;
+      if(!p.gkWilling && p.pos === 'GK'){
+        // they no longer want to play goalie and they're standing in net
+        // right now - pull them out immediately, don't wait for the next
+        // suggestion window.
+        const benchPool = state.players.filter(b=>b.present && b.pos==='BENCH' && b.gkWilling);
+        if(benchPool.length > 0){
+          let best = benchPool[0];
+          benchPool.forEach(b=>{
+            if(b.posSeconds.GK < best.posSeconds.GK) best = b;
+            else if(b.posSeconds.GK === best.posSeconds.GK && b.seconds < best.seconds) best = b;
+          });
+          best.pos = 'GK';
+          p.pos = 'BENCH';
+          state.shortNote = '';
+        } else {
+          state.shortNote = p.name + ' no longer wants to play goalie, but no other willing player is on the bench \u2014 move someone into net manually.';
+        }
+      }
       state.suggestions = [];
       render();
     });
@@ -821,6 +874,9 @@ function tick(){
     if(p.present && p.pos !== 'BENCH'){
       p.seconds += 1;
       p.posSeconds[p.pos] += 1;
+      p.consecutiveSeconds += 1;
+    } else {
+      p.consecutiveSeconds = 0; // resting resets their stint clock
     }
   });
   const secsIntoHalf = state.elapsed - (state.half===1?0:HALF_SECONDS);
@@ -848,10 +904,13 @@ function endHalf(){
 
 function resetGame(){
   clearInterval(state.intervalId);
+  // Names AND goalie-willingness carry over - positions and presence still
+  // reset fresh each game since those genuinely change day to day.
   const keepNames = state.players.map(p=>p.name);
+  const keepGk = state.players.map(p=>p.gkWilling);
   state = {
     screen: 'setup',
-    players: freshPlayers(keepNames),
+    players: freshPlayers(keepNames, keepGk),
     running:false, elapsed:0, half:1, selected:null, intervalId:null,
     suggestions:[], lastSuggestedWindow:-1, rosterOpen:false, shortNote:'',
   };
