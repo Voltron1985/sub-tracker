@@ -77,9 +77,9 @@
     cursor:pointer;
     letter-spacing:0.02em;
   }
-  .btn-go{background:var(--pitch);color:white;}
+  .btn-go{background:#2f9e52;color:white;}
   .btn-pause{background:var(--amber);color:var(--ink);}
-  .btn-ghost{background:transparent;color:#9fb8a6;border:1px solid #3a4d40;}
+  .btn-ghost{background:rgba(255,255,255,0.08);color:#dfeee2;border:1px solid #7fa08f;}
   .btn-suggest{background:var(--amber);color:var(--ink);}
   .btn-apply{background:#7bd389;color:var(--ink);}
   .btn-roster{background:var(--blue);color:white;}
@@ -411,14 +411,18 @@ const SUB_WINDOW = 5 * 60;
 const DEFAULT_ROSTER = ['Annika','Beck','Benaiah','Caleb','Gemma','Iris','Jane','Jonah','Josiah','June','Malin','Nels','Onais','Roman'];
 
 function freshPlayers(names, gkFlags){
+  // Everyone starts on the bench - no algorithmic default lineup at all.
+  // Coach assigns every position manually each game.
   return Array.from({length:14}, (_,i)=>({
     id:i, name: (names && names[i]) || DEFAULT_ROSTER[i] || '',
-    pos: i<3 ? 'F' : i<6 ? 'D' : i===6 ? 'GK' : 'BENCH',
+    pos: 'BENCH',
     present: true,
-    gkWilling: gkFlags ? !!gkFlags[i] : i===6, // preserved on reset if provided, else default
+    gkWilling: gkFlags ? !!gkFlags[i] : false, // preserved on reset if provided, else coach checks manually
     seconds:0,
     posSeconds:{F:0,D:0,GK:0},
     consecutiveSeconds:0, // resets to 0 the instant they hit the bench
+    halfSeconds:0, // resets at halftime - used to balance THIS half specifically
+    halfPosSeconds:{F:0,D:0,GK:0},
   }));
 }
 
@@ -476,6 +480,16 @@ function getTarget(){
   return Math.round((HALF_SECONDS*2*7)/n);
 }
 
+// Half-scoped version of the same math, spanning ONE 20-minute half instead
+// of the full 40-minute game. This is what the live suggestion algorithm
+// uses so it balances minutes fresh within each half, instead of only
+// converging toward a full-game total (which could let a kid get most of
+// their minutes in one half and get shorted in the other).
+function getHalfTarget(){
+  const n = Math.max(1, presentCount());
+  return Math.round((HALF_SECONDS*7)/n);
+}
+
 // How many field slots each line has. Goalie only has 1 slot vs 3 for
 // forward/defender, so a fair GK target per kid is naturally much smaller
 // than a fair forward or defender target - that's expected, not a bug.
@@ -486,6 +500,10 @@ function gkWillingCount(){
 function getGKTarget(){
   const n = Math.max(1, gkWillingCount());
   return Math.round((HALF_SECONDS*2*1)/n);
+}
+function getHalfGKTarget(){
+  const n = Math.max(1, gkWillingCount());
+  return Math.round((HALF_SECONDS*1)/n);
 }
 // Personalized: a goalie-willing kid's forward/defender target shrinks to
 // make room for their goalie time, so their TOTAL still matches everyone
@@ -499,6 +517,15 @@ function getPosTarget(pos, player){
   const gkPortion = willing ? getGKTarget() : 0;
   const remaining = Math.max(0, getTarget() - gkPortion);
   return Math.round(remaining/2); // split evenly between forward and defender
+}
+function getHalfPosTarget(pos, player){
+  if(pos === 'GK'){
+    return (player && player.gkWilling) ? getHalfGKTarget() : 0;
+  }
+  const willing = player ? player.gkWilling : false;
+  const gkPortion = willing ? getHalfGKTarget() : 0;
+  const remaining = Math.max(0, getHalfTarget() - gkPortion);
+  return Math.round(remaining/2);
 }
 
 function renderSetup(){
@@ -592,49 +619,93 @@ function bindSetupEvents(){
 // hard stamina limit is swapped regardless of this cap (see below).
 const MAX_SUGGESTIONS = 3; // realistic number of OPTIONAL rotation swaps per window
 const MAX_CONSECUTIVE_SECONDS = 10 * 60; // hard stamina limit - no player stays on past this in one stretch
+const FLOOR_SECONDS = SUB_WINDOW; // guaranteed minimum: at least one window's worth of time per half
+const LAST_WINDOW_BOUNDARY = HALF_SECONDS - SUB_WINDOW; // the 15-minute mark - last chance to hit the floor before halftime/full-time
 
-function computeSuggestions(){
+// projectSeconds: how many seconds from now until the actual swap happens
+// (0 at the real window boundary, up to 30 during the early warning preview).
+// On-field players accrue that much MORE time before the swap really occurs,
+// so their stamina/overage numbers are projected forward to match reality
+// at the moment it counts - otherwise a kid who's about to cross the 10:00
+// limit, or about to become the most-overdue player, wouldn't get flagged
+// until the preview already passed.
+function computeSuggestions(projectSeconds, isLastWindowOfHalf){
+  projectSeconds = projectSeconds || 0;
   const groups = ['F','D','GK'];
   const benchPool = state.players.filter(p=>p.present && p.pos==='BENCH').slice();
   if(benchPool.length === 0) return [];
 
   const used = new Set();
+  const reservedOut = new Set(); // field players already slated to leave this round
   const out = [];
+
+  function projectedConsecutive(p){ return p.consecutiveSeconds + projectSeconds; }
+  function projectedHalfPos(p,g){ return p.halfPosSeconds[g] + projectSeconds; }
 
   function bestReplacement(g){
     let pool = benchPool.filter(b=>!used.has(b.id) && (g!=='GK' || b.gkWilling));
     if(pool.length === 0) return null;
     pool.sort((a,b)=>{
-      const dA = a.posSeconds[g] - getPosTarget(g,a);
-      const dB = b.posSeconds[g] - getPosTarget(g,b);
+      // bench players aren't accruing position time while benched, so no projection here
+      const dA = a.halfPosSeconds[g] - getHalfPosTarget(g,a);
+      const dB = b.halfPosSeconds[g] - getHalfPosTarget(g,b);
       if(dA !== dB) return dA - dB;
-      if(a.seconds !== b.seconds) return a.seconds - b.seconds;
+      if(a.halfSeconds !== b.halfSeconds) return a.halfSeconds - b.halfSeconds;
       return Math.random() - 0.5;
     });
     return pool[0];
   }
 
-  // HARD RULE, not a suggestion: anyone who has hit the consecutive-minutes
-  // stamina limit comes off no matter what, even beyond the normal cap on
-  // how many swaps happen in one window.
+  // HARD RULE, not a suggestion: anyone who WILL have hit the consecutive-
+  // minutes stamina limit by the time the swap actually happens comes off,
+  // even beyond the normal cap on how many swaps happen in one window.
   const mandatory = state.players
-    .filter(p=>p.present && p.pos!=='BENCH' && p.consecutiveSeconds >= MAX_CONSECUTIVE_SECONDS)
-    .sort((a,b)=> b.consecutiveSeconds - a.consecutiveSeconds);
+    .filter(p=>p.present && p.pos!=='BENCH' && projectedConsecutive(p) >= MAX_CONSECUTIVE_SECONDS)
+    .sort((a,b)=> projectedConsecutive(b) - projectedConsecutive(a));
   mandatory.forEach(fieldP=>{
     const inP = bestReplacement(fieldP.pos);
     if(inP){
       out.push({outId: fieldP.id, inId: inP.id, pos: fieldP.pos, mandatory:true});
       used.add(inP.id);
+      reservedOut.add(fieldP.id);
     }
   });
 
+  // ANOTHER HARD RULE: this is the last sub window of the half - anyone
+  // still sitting with less than one window's worth of time this half
+  // (essentially hasn't played) is guaranteed on now, since there's no
+  // opportunity left to fix it before the whistle. Bypasses the normal cap.
+  if(isLastWindowOfHalf){
+    const floorKids = benchPool
+      .filter(p=>!used.has(p.id) && p.halfSeconds < FLOOR_SECONDS)
+      .sort((a,b)=> a.halfSeconds - b.halfSeconds);
+    floorKids.forEach(floorKid=>{
+      const eligibleLines = groups.filter(g=> g!=='GK' || floorKid.gkWilling);
+      // prefer whichever position they've played least, for variety
+      eligibleLines.sort((a,b)=> floorKid.halfPosSeconds[a] - floorKid.halfPosSeconds[b]);
+      for(const g of eligibleLines){
+        const fieldGroup = state.players.filter(p=>p.present && p.pos===g && !reservedOut.has(p.id));
+        if(fieldGroup.length === 0) continue;
+        // bump whoever in that line has the most time this half
+        let outgoing = fieldGroup[0];
+        fieldGroup.forEach(p=>{ if(p.halfPosSeconds[g] > outgoing.halfPosSeconds[g]) outgoing = p; });
+        out.push({outId: outgoing.id, inId: floorKid.id, pos: g, mandatory:true, floorGuarantee:true});
+        used.add(floorKid.id);
+        reservedOut.add(outgoing.id);
+        break;
+      }
+    });
+  }
+
   // Rank every remaining field player, across ALL lines, by how far over
-  // their own personalized target they are - most overdue first. Capped
-  // so a normal window stays a handful of targeted swaps, not the whole team.
+  // their own personalized target THEY'LL BE FOR THIS HALF by the time the
+  // swap happens - most overdue first, scoped to the current half so a kid
+  // who played heavily in half 1 doesn't coast on that credit in half 2.
+  // Capped so a normal window stays a handful of targeted swaps.
   let candidates = [];
   groups.forEach(g=>{
-    state.players.filter(p=>p.present && p.pos===g && !mandatory.includes(p)).forEach(fieldP=>{
-      candidates.push({fieldP, g, urgency: fieldP.posSeconds[g] - getPosTarget(g, fieldP)});
+    state.players.filter(p=>p.present && p.pos===g && !reservedOut.has(p.id)).forEach(fieldP=>{
+      candidates.push({fieldP, g, urgency: projectedHalfPos(fieldP,g) - getHalfPosTarget(g, fieldP)});
     });
   });
   candidates.sort((a,b)=> (b.urgency - a.urgency) || (Math.random() - 0.5));
@@ -677,8 +748,8 @@ function togglePresentLive(idx){
       if(benchPool.length > 0){
         let best = benchPool[0];
         benchPool.forEach(b=>{
-          if(b.posSeconds[vacated] < best.posSeconds[vacated]) best = b;
-          else if(b.posSeconds[vacated] === best.posSeconds[vacated] && b.seconds < best.seconds) best = b;
+          if(b.halfPosSeconds[vacated] < best.halfPosSeconds[vacated]) best = b;
+          else if(b.halfPosSeconds[vacated] === best.halfPosSeconds[vacated] && b.halfSeconds < best.halfSeconds) best = b;
         });
         best.pos = vacated;
         state.shortNote = '';
@@ -687,17 +758,17 @@ function togglePresentLive(idx){
       }
     }
   }
-  state.suggestions = [];
+  state.suggestions = []; state.previewShown = false; // roster changed - force a fresh preview next warning
   render();
 }
 
 function renderGame(){
   const onField = state.players.filter(p=>p.present && p.pos!=='BENCH');
-  const forwards = onField.filter(p=>p.pos==='F').sort((a,b)=>b.seconds-a.seconds);
-  const defenders = onField.filter(p=>p.pos==='D').sort((a,b)=>b.seconds-a.seconds);
+  const forwards = onField.filter(p=>p.pos==='F').sort((a,b)=>b.halfSeconds-a.halfSeconds);
+  const defenders = onField.filter(p=>p.pos==='D').sort((a,b)=>b.halfSeconds-a.halfSeconds);
   const goalie = onField.filter(p=>p.pos==='GK');
-  const bench = state.players.filter(p=>p.present && p.pos==='BENCH').sort((a,b)=>a.seconds-b.seconds);
-  const lowestBenchSecs = bench.length? bench[0].seconds : 0;
+  const bench = state.players.filter(p=>p.present && p.pos==='BENCH').sort((a,b)=>a.halfSeconds-b.halfSeconds);
+  const lowestBenchSecs = bench.length? bench[0].halfSeconds : 0;
   const noSubsToday = bench.length === 0;
   const target = getTarget();
 
@@ -727,7 +798,7 @@ function renderGame(){
   }
 
   function benchCard(p){
-    const due = p.seconds === lowestBenchSecs;
+    const due = p.halfSeconds === lowestBenchSecs;
     const pct = Math.min(100, (p.seconds/target)*100);
     const sel = state.selected === p.id;
     const markClass = inIds.has(p.id) ? 'marked-in' : '';
@@ -753,7 +824,7 @@ function renderGame(){
         return `
           <div class="suggest-row">
             <div class="who">
-              <span class="out">OUT ${outP.name} <span class="pos-tag">(${POS_LABEL(s.pos)}${s.mandatory ? ', STAMINA LIMIT' : ''}, ${fmt(outP.seconds)})</span></span>
+              <span class="out">OUT ${outP.name} <span class="pos-tag">(${POS_LABEL(s.pos)}${s.floorGuarantee ? ', FLOOR MINUTES' : (s.mandatory ? ', STAMINA LIMIT' : '')}, ${fmt(outP.seconds)})</span></span>
               <span class="in">IN &nbsp;${inP.name} <span class="pos-tag">(${fmt(inP.seconds)})</span></span>
             </div>
           </div>
@@ -848,7 +919,9 @@ function bindGameEvents(){
   document.getElementById('toggleBtn').addEventListener('click', toggleClock);
   const sb = document.getElementById('suggestBtn');
   if(sb) sb.addEventListener('click', ()=>{
-    state.suggestions = computeSuggestions();
+    const secsIntoHalf = state.elapsed - (state.half===1?0:HALF_SECONDS);
+    const inFinalSegment = secsIntoHalf >= LAST_WINDOW_BOUNDARY && secsIntoHalf < HALF_SECONDS;
+    state.suggestions = computeSuggestions(0, inFinalSegment);
     render();
   });
   const ht = document.getElementById('halftimeBtn');
@@ -891,8 +964,8 @@ function bindGameEvents(){
         if(benchPool.length > 0){
           let best = benchPool[0];
           benchPool.forEach(b=>{
-            if(b.posSeconds.GK < best.posSeconds.GK) best = b;
-            else if(b.posSeconds.GK === best.posSeconds.GK && b.seconds < best.seconds) best = b;
+            if(b.halfPosSeconds.GK < best.halfPosSeconds.GK) best = b;
+            else if(b.halfPosSeconds.GK === best.halfPosSeconds.GK && b.halfSeconds < best.halfSeconds) best = b;
           });
           best.pos = 'GK';
           p.pos = 'BENCH';
@@ -901,7 +974,7 @@ function bindGameEvents(){
           state.shortNote = p.name + ' no longer wants to play goalie, but no other willing player is on the bench \u2014 move someone into net manually.';
         }
       }
-      state.suggestions = [];
+      state.suggestions = []; state.previewShown = false; // roster changed - force a fresh preview next warning
       render();
     });
   });
@@ -968,6 +1041,8 @@ function tick(){
       p.seconds += 1;
       p.posSeconds[p.pos] += 1;
       p.consecutiveSeconds += 1;
+      p.halfSeconds += 1;
+      p.halfPosSeconds[p.pos] += 1;
     } else {
       p.consecutiveSeconds = 0; // resting resets their stint clock
     }
@@ -977,19 +1052,26 @@ function tick(){
   const secInWindow = secsIntoHalf % SUB_WINDOW;
   const secsToNextSub = SUB_WINDOW - (((secsIntoHalf % SUB_WINDOW) + SUB_WINDOW) % SUB_WINDOW);
   const upcomingIsRealWindow = secsIntoHalf + secsToNextSub < HALF_SECONDS; // don't preview at halftime/full-time
+  const upcomingBoundary = secsIntoHalf + secsToNextSub;
 
   // Show the suggestion panel as soon as the 30-second warning banner appears,
   // not just at the exact window boundary - so the coach has the assignments
   // ready to read during the pulsing "get ready" alert, not after it.
   if(secsToNextSub <= 30 && secsToNextSub > 0 && upcomingIsRealWindow && !state.previewShown){
-    state.suggestions = computeSuggestions();
+    state.suggestions = computeSuggestions(secsToNextSub, upcomingBoundary === LAST_WINDOW_BOUNDARY);
     state.previewShown = true;
   }
   // Only the 5/10/15-minute marks are real sub windows. Exclude secsIntoHalf===0
   // (kickoff, nothing to sub yet) and secsIntoHalf===HALF_SECONDS (that's the
   // whistle for halftime/full-time, not a mid-half substitution).
   if(secInWindow === 0 && secsIntoHalf > 0 && secsIntoHalf < HALF_SECONDS && windowIdx !== state.lastSuggestedWindow){
-    state.suggestions = computeSuggestions();
+    // If the 30-second preview already ran, trust it as final - don't
+    // recompute and risk the list changing right as the coach reads it.
+    // Only compute fresh here if somehow no preview happened (e.g. the
+    // clock was paused during that window, or the app was just opened).
+    if(!state.previewShown){
+      state.suggestions = computeSuggestions(0, secsIntoHalf === LAST_WINDOW_BOUNDARY);
+    }
     state.lastSuggestedWindow = windowIdx;
     state.previewShown = false; // reset so the NEXT window's early preview can fire
   }
@@ -1049,31 +1131,70 @@ function bindStatsEvents(){
   });
 }
 
-// Builds a suggested 2nd-half starting XI from first-half data: for each
-// line, picks whoever's furthest under their own personalized target for
-// that position - same fairness logic as in-game suggestions, just applied
-// to the whole roster at once instead of one swap at a time. Coach can
-// still tap-swap any of it before starting the half, same as any other time.
+// Builds a suggested 2nd-half lineup. Important distinction from a full
+// re-draft: this starts from whoever was ALREADY on the field at the end of
+// half 1 and only swaps someone in if their half-1 shortfall is genuinely
+// large (>= 60s) - not just smaller than the next candidate's. A full
+// ranking-based re-draft was tried first and made things worse: it always
+// promotes whoever played least, which systematically gives them a bigger
+// half 2 than half 1 (and the opposite for whoever played most) - the exact
+// opposite of "equal time between halves." Preserving continuity and only
+// correcting real outliers keeps each kid's two halves close to each other.
+const HALFTIME_SWAP_THRESHOLD = 60;
+
 function computeHalftimeLineup(){
   const groups = ['F','D','GK'];
   const present = state.players.filter(p=>p.present);
-  const assigned = new Set();
+  const usedBench = new Set();
+
   groups.forEach(g=>{
-    let pool = present.filter(p=>!assigned.has(p.id) && (g!=='GK' || p.gkWilling));
-    if(g==='GK' && pool.length===0){
-      pool = present.filter(p=>!assigned.has(p.id)); // safety net: nobody willing present
-    }
-    pool.sort((a,b)=>{
-      const dA = a.posSeconds[g] - getPosTarget(g,a);
-      const dB = b.posSeconds[g] - getPosTarget(g,b);
-      if(dA !== dB) return dA - dB; // most under-target first
-      return a.seconds - b.seconds;
+    let onField = present.filter(p=>p.pos===g);
+    // safety net: if a formerly-present GK is now absent, or the line is
+    // short for any reason, treat as needing a fresh fill from bench
+    let need = LINE_SLOTS[g] - onField.length;
+
+    // Check each current starter in this line - swap out only if their half-1
+    // time is a real outlier ABOVE target and a bench player is a real
+    // outlier BELOW target for this same position.
+    onField.slice().sort((a,b)=>{
+      const overA = a.halfPosSeconds[g] - getHalfPosTarget(g,a);
+      const overB = b.halfPosSeconds[g] - getHalfPosTarget(g,b);
+      return overB - overA; // most over first
+    }).forEach(starter=>{
+      let benchPool = present.filter(p=>p.pos==='BENCH' && !usedBench.has(p.id) && (g!=='GK' || p.gkWilling));
+      if(benchPool.length === 0) return;
+      benchPool.sort((a,b)=>{
+        const dA = a.halfPosSeconds[g] - getHalfPosTarget(g,a);
+        const dB = b.halfPosSeconds[g] - getHalfPosTarget(g,b);
+        if(dA !== dB) return dA - dB;
+        return a.halfSeconds - b.halfSeconds;
+      });
+      const candidate = benchPool[0];
+      const starterOverage = starter.halfPosSeconds[g] - getHalfPosTarget(g, starter);
+      const candidateDeficit = getHalfPosTarget(g, candidate) - candidate.halfPosSeconds[g];
+      if(starterOverage >= HALFTIME_SWAP_THRESHOLD && candidateDeficit >= HALFTIME_SWAP_THRESHOLD){
+        starter.pos = 'BENCH';
+        candidate.pos = g;
+        usedBench.add(candidate.id);
+      }
     });
-    pool.slice(0, LINE_SLOTS[g]).forEach(p=>{ p.pos = g; assigned.add(p.id); });
+
+    // fill any genuinely empty slots (shouldn't normally happen, but covers
+    // absences/edge cases) with the least-played eligible bench player
+    while(need > 0){
+      let benchPool = present.filter(p=>p.pos==='BENCH' && !usedBench.has(p.id) && (g!=='GK' || p.gkWilling));
+      if(g==='GK' && benchPool.length===0) benchPool = present.filter(p=>p.pos==='BENCH' && !usedBench.has(p.id));
+      if(benchPool.length === 0) break;
+      benchPool.sort((a,b)=> a.halfPosSeconds[g] - b.halfPosSeconds[g]);
+      benchPool[0].pos = g;
+      usedBench.add(benchPool[0].id);
+      need--;
+    }
   });
   present.forEach(p=>{
-    if(!assigned.has(p.id)) p.pos = 'BENCH';
     p.consecutiveSeconds = 0; // everyone's rested after the water break
+    p.halfSeconds = 0; // half 2 starts its own fresh balance, independent of half 1
+    p.halfPosSeconds = {F:0,D:0,GK:0};
   });
 }
 
