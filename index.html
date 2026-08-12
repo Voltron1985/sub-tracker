@@ -226,6 +226,18 @@
   .card.stint-max{background:var(--danger); animation:pulse 1.5s infinite;}
   @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.75;}}
   .card .name{font-weight:700;font-size:0.88rem;line-height:1.2;}
+  .gk-tag{
+    display:inline-block;
+    background:var(--blue);
+    color:white;
+    font-size:0.58rem;
+    font-weight:800;
+    letter-spacing:0.03em;
+    padding:1px 5px;
+    border-radius:5px;
+    margin-left:5px;
+    vertical-align:middle;
+  }
   .card .time{
     font-variant-numeric:tabular-nums;
     font-size:0.78rem;
@@ -346,6 +358,46 @@
     color:#9fb8a6;
     text-align:center;
   }
+  .stats-wrap{
+    max-width:520px;
+    margin:0 auto;
+    padding:20px 14px 60px;
+  }
+  .stats-wrap h1{font-size:1.3rem;margin-bottom:2px;}
+  .stats-wrap p{color:#9fb8a6;font-size:0.82rem;margin-top:2px;}
+  .stats-table{
+    width:100%;
+    border-collapse:collapse;
+    margin-top:14px;
+    font-size:0.82rem;
+  }
+  .stats-table th{
+    text-align:left;
+    font-size:0.62rem;
+    text-transform:uppercase;
+    letter-spacing:0.05em;
+    color:#9fb8a6;
+    padding:6px 6px;
+    border-bottom:2px solid #3a4d40;
+  }
+  .stats-table td{
+    padding:8px 6px;
+    border-bottom:1px solid #26332a;
+  }
+  .stats-table tr:last-child td{border-bottom:none;}
+  .stats-table .stats-name{font-weight:700;}
+  .stats-table .stats-total{font-variant-numeric:tabular-nums; font-weight:700; color:#a9e2b5;}
+  .stats-table td.num{font-variant-numeric:tabular-nums; color:#dfeee2;}
+  .stats-back{margin-top:16px;width:100%;}
+  .stats-note{
+    font-size:0.72rem;
+    color:#9fb8a6;
+    background:var(--bench);
+    border-radius:10px;
+    padding:10px 12px;
+    margin-top:14px;
+    line-height:1.5;
+  }
 </style>
 </head>
 <body class="field-lines">
@@ -382,6 +434,7 @@ let state = {
   lastSuggestedWindow:-1,
   rosterOpen:false,
   shortNote:'', // e.g. "Short 1 Defender" after an injury with no bench cover
+  halftimeNotice:false,
 };
 
 function fmt(s){
@@ -396,6 +449,9 @@ function render(){
   if(state.screen === 'setup'){
     app.innerHTML = renderSetup();
     bindSetupEvents();
+  } else if(state.screen === 'stats'){
+    app.innerHTML = renderStats();
+    bindStatsEvents();
   } else {
     app.innerHTML = renderGame();
     bindGameEvents();
@@ -661,7 +717,7 @@ function renderGame(){
     return `
       <div class="card ${gkClass} ${sel?'selected':''} ${markClass} ${stintClass}" data-id="${p.id}">
         ${atLimit?'<span class="flag" style="background:var(--danger);">Max stint</span>':''}
-        <span class="name">${p.name}</span>
+        <span class="name">${p.name}${(p.gkWilling && p.pos==='GK')?'<span class="gk-tag">GK</span>':''}</span>
         <span class="time">${fmt(p.seconds)} total</span>
         <span class="posbreak">On field: ${fmt(p.consecutiveSeconds)} / 10:00</span>
         <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
@@ -679,7 +735,7 @@ function renderGame(){
     return `
       <div class="card bench ${due?'due':''} ${sel?'selected':''} ${markClass}" data-id="${p.id}">
         ${due?'<span class="flag">Due</span>':''}
-        <span class="name">${p.name}</span>
+        <span class="name">${p.name}${p.gkWilling?'<span class="gk-tag">GK</span>':''}</span>
         <span class="time">${fmt(p.seconds)} total</span>
         <span class="posbreak">${posTag}</span>
         <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
@@ -715,6 +771,8 @@ function renderGame(){
     return `<div class="warn-note" style="background:var(--danger); color:white; border-radius:8px; padding:6px 10px; margin-top:6px;">10:00 stamina limit hit: ${overLimit.map(p=>p.name).join(', ')} &mdash; sub now</div>`;
   })();
 
+  const halftimeBanner = state.halftimeNotice ? `<div class="warn-note" style="background:var(--blue); color:white; border-radius:8px; padding:6px 10px; margin-top:6px;">Suggested 2nd half lineup is set below &mdash; adjust anyone by tapping bench then field, then hit Start.</div>` : '';
+
   const rosterPanel = state.rosterOpen ? `
     <div class="roster-panel">
       <div class="stitle">Today's Roster</div>
@@ -742,10 +800,12 @@ function renderGame(){
       <div class="target-note">${noSubsToday ? '' : (nearSub ? 'Sub window — see assignments below' : 'Next sub in ' + fmt(secsToNextSub))}</div>
       ${state.shortNote ? `<div class="warn-note">${state.shortNote}</div>` : ''}
       ${staminaBanner}
+      ${halftimeBanner}
       <div class="btnrow">
         <button class="${state.running?'btn-pause':'btn-go'}" id="toggleBtn">${state.running? 'Pause':'Start'}</button>
         ${noSubsToday ? '' : `<button class="btn-suggest" id="suggestBtn">Suggest Subs</button>`}
         <button class="btn-roster" id="rosterBtn">${state.rosterOpen? 'Close Roster':'Roster'}</button>
+        <button class="btn-ghost" id="statsBtn">Stats</button>
         <button class="btn-ghost" id="halftimeBtn" ${state.half===2?'disabled style="opacity:.3"':''}>End Half 1</button>
         <button class="btn-ghost" id="resetBtn">Reset</button>
       </div>
@@ -792,6 +852,10 @@ function bindGameEvents(){
   document.getElementById('resetBtn').addEventListener('click', resetGame);
   document.getElementById('rosterBtn').addEventListener('click', ()=>{
     state.rosterOpen = !state.rosterOpen;
+    render();
+  });
+  document.getElementById('statsBtn').addEventListener('click', ()=>{
+    state.screen = 'stats';
     render();
   });
   const applyAll = document.getElementById('applyAllBtn');
@@ -863,11 +927,34 @@ function onCardTap(id){
 function toggleClock(){
   state.running = !state.running;
   if(state.running){
-    state.intervalId = setInterval(tick, 1000);
+    state.lastTickTs = Date.now();
+    state.fractionalAccum = 0;
+    state.intervalId = setInterval(clockPump, 250);
+    state.halftimeNotice = false;
   } else {
     clearInterval(state.intervalId);
   }
   render();
+}
+
+// Runs every 250ms but measures REAL elapsed time via Date.now(), not a
+// naive "assume 1 second passed" counter. If the phone screen locks or
+// Safari backgrounds the tab, timers get throttled or paused - when they
+// resume, this catches up all the real seconds that actually passed
+// instead of silently losing them (which was causing sub suggestions to
+// fire late, after the real-world 5-minute mark had already passed).
+function clockPump(){
+  const now = Date.now();
+  const deltaSec = (now - state.lastTickTs) / 1000;
+  state.lastTickTs = now;
+  state.fractionalAccum += deltaSec;
+  let ticked = false;
+  while(state.fractionalAccum >= 1 && state.running){
+    state.fractionalAccum -= 1;
+    tick();
+    ticked = true;
+  }
+  if(ticked) render();
 }
 
 function tick(){
@@ -884,7 +971,10 @@ function tick(){
   const secsIntoHalf = state.elapsed - (state.half===1?0:HALF_SECONDS);
   const windowIdx = Math.floor(secsIntoHalf / SUB_WINDOW) + (state.half===2 ? 100 : 0);
   const secInWindow = secsIntoHalf % SUB_WINDOW;
-  if(secInWindow === 0 && windowIdx !== state.lastSuggestedWindow){
+  // Only the 5/10/15-minute marks are real sub windows. Exclude secsIntoHalf===0
+  // (kickoff, nothing to sub yet) and secsIntoHalf===HALF_SECONDS (that's the
+  // whistle for halftime/full-time, not a mid-half substitution).
+  if(secInWindow === 0 && secsIntoHalf > 0 && secsIntoHalf < HALF_SECONDS && windowIdx !== state.lastSuggestedWindow){
     state.suggestions = computeSuggestions();
     state.lastSuggestedWindow = windowIdx;
   }
@@ -892,7 +982,84 @@ function tick(){
     state.running = false;
     clearInterval(state.intervalId);
   }
-  render();
+}
+
+function renderStats(){
+  const rows = state.players.filter(p=>p.present).slice().sort((a,b)=>b.seconds-a.seconds).map(p=>{
+    const fTgt = getPosTarget('F',p), dTgt = getPosTarget('D',p), gTgt = getPosTarget('GK',p);
+    const totalTgt = getTarget();
+    const diff = p.seconds - totalTgt;
+    const diffStr = (diff>=0?'+':'') + Math.round(diff/60) + 'm';
+    return `
+      <tr>
+        <td class="stats-name">${p.name}${p.gkWilling?'<span class="gk-tag">GK</span>':''}</td>
+        <td class="num stats-total">${fmt(p.seconds)}</td>
+        <td class="num" style="color:${Math.abs(diff)<60?'#7bd389':'#f2b5ae'};">${diffStr}</td>
+        <td class="num">${fmt(p.posSeconds.F)}<br><span style="opacity:0.5;font-size:0.7em;">/ ${fmt(fTgt)}</span></td>
+        <td class="num">${fmt(p.posSeconds.D)}<br><span style="opacity:0.5;font-size:0.7em;">/ ${fmt(dTgt)}</span></td>
+        <td class="num">${fmt(p.posSeconds.GK)}<br><span style="opacity:0.5;font-size:0.7em;">/ ${fmt(gTgt)}</span></td>
+      </tr>
+    `;
+  }).join('');
+
+  const gameClockLabel = state.elapsed >= HALF_SECONDS*2 ? 'Full game (45:00)' : ('In progress \u2014 ' + fmt(state.elapsed) + ' elapsed');
+
+  return `
+    <div class="stats-wrap">
+      <h1>Final Stats</h1>
+      <p>${gameClockLabel} &middot; sorted by total minutes played</p>
+      <table class="stats-table">
+        <thead>
+          <tr>
+            <th>Player</th>
+            <th>Total</th>
+            <th>vs target</th>
+            <th>Forward</th>
+            <th>Defender</th>
+            <th>Goalie</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="stats-note">"vs target" compares total minutes to today's equal-time target (${fmt(getTarget())}). Forward/Defender/Goalie columns show actual minutes over each player's own personalized target for that position \u2014 goalie-willing kids have smaller F/D targets since goalie time is carved out of the same total.</div>
+      <button class="start-btn stats-back" id="backToGameBtn">Back to Game</button>
+    </div>
+  `;
+}
+
+function bindStatsEvents(){
+  document.getElementById('backToGameBtn').addEventListener('click', ()=>{
+    state.screen = 'game';
+    render();
+  });
+}
+
+// Builds a suggested 2nd-half starting XI from first-half data: for each
+// line, picks whoever's furthest under their own personalized target for
+// that position - same fairness logic as in-game suggestions, just applied
+// to the whole roster at once instead of one swap at a time. Coach can
+// still tap-swap any of it before starting the half, same as any other time.
+function computeHalftimeLineup(){
+  const groups = ['F','D','GK'];
+  const present = state.players.filter(p=>p.present);
+  const assigned = new Set();
+  groups.forEach(g=>{
+    let pool = present.filter(p=>!assigned.has(p.id) && (g!=='GK' || p.gkWilling));
+    if(g==='GK' && pool.length===0){
+      pool = present.filter(p=>!assigned.has(p.id)); // safety net: nobody willing present
+    }
+    pool.sort((a,b)=>{
+      const dA = a.posSeconds[g] - getPosTarget(g,a);
+      const dB = b.posSeconds[g] - getPosTarget(g,b);
+      if(dA !== dB) return dA - dB; // most under-target first
+      return a.seconds - b.seconds;
+    });
+    pool.slice(0, LINE_SLOTS[g]).forEach(p=>{ p.pos = g; assigned.add(p.id); });
+  });
+  present.forEach(p=>{
+    if(!assigned.has(p.id)) p.pos = 'BENCH';
+    p.consecutiveSeconds = 0; // everyone's rested after the water break
+  });
 }
 
 function endHalf(){
@@ -901,6 +1068,9 @@ function endHalf(){
   state.half = 2;
   state.elapsed = HALF_SECONDS;
   state.suggestions = [];
+  state.lastSuggestedWindow = -1;
+  computeHalftimeLineup();
+  state.halftimeNotice = true; // shown until coach hits Start for 2nd half
   render();
 }
 
@@ -914,7 +1084,7 @@ function resetGame(){
     screen: 'setup',
     players: freshPlayers(keepNames, keepGk),
     running:false, elapsed:0, half:1, selected:null, intervalId:null,
-    suggestions:[], lastSuggestedWindow:-1, rosterOpen:false, shortNote:'',
+    suggestions:[], lastSuggestedWindow:-1, rosterOpen:false, shortNote:'', halftimeNotice:false,
   };
   render();
 }
