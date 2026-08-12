@@ -356,9 +356,11 @@
 const HALF_SECONDS = 20 * 60;
 const SUB_WINDOW = 5 * 60;
 
+const DEFAULT_ROSTER = ['Annika','Beck','Benaiah','Caleb','Gemma','Iris','Jane','Jonah','Josiah','June','Malin','Nels','Onais','Roman'];
+
 function freshPlayers(names, gkFlags){
   return Array.from({length:14}, (_,i)=>({
-    id:i, name: (names && names[i]) || '',
+    id:i, name: (names && names[i]) || DEFAULT_ROSTER[i] || '',
     pos: i<3 ? 'F' : i<6 ? 'D' : i===6 ? 'GK' : 'BENCH',
     present: true,
     gkWilling: gkFlags ? !!gkFlags[i] : i===6, // preserved on reset if provided, else default
